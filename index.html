@@ -137,7 +137,6 @@ const CFG = {
 let engine, scene, xrSession, xrRefSpace, xrLayer;
 let portalRoot, orbMesh;
 let insidePortal  = false;
-let markerTracked = false;
 let camPose       = null;  // latest XRViewerPose
 
 // ─── DOM ───────────────────────────────────────────────────────────────────
@@ -152,27 +151,7 @@ const statusBar    = document.getElementById('statusBar');
 const insideBadge  = document.getElementById('insideBadge');
 const markerCanvas = document.getElementById('markerPreview');
 
-// ─── MARKER ────────────────────────────────────────────────────────────────
-function drawMarker(ctx, n) {
-  const cell = n / 8;
-  for (let r = 0; r < 8; r++)
-    for (let c = 0; c < 8; c++) {
-      ctx.fillStyle = (r+c)%2===0 ? '#fff' : '#000';
-      ctx.fillRect(c*cell, r*cell, cell, cell);
-    }
-  ctx.fillStyle='#f22'; ctx.beginPath();
-  ctx.arc(cell*1.5, cell*1.5, cell*0.38, 0, Math.PI*2); ctx.fill();
-  ctx.fillStyle='#111'; ctx.font=`bold ${Math.round(cell*0.85)}px monospace`;
-  ctx.textAlign='center'; ctx.textBaseline='middle';
-  ctx.fillText('AR', n/2, n/2);
-}
-drawMarker(markerCanvas.getContext('2d'), 256);
-markerCanvas.addEventListener('click', () => {
-  const c = document.createElement('canvas'); c.width = c.height = 512;
-  drawMarker(c.getContext('2d'), 512);
-  Object.assign(document.createElement('a'),
-    {href:c.toDataURL('image/png'), download:'ar-portal-marker.png'}).click();
-});
+
 
 // ─── XR SUPPORT CHECK ──────────────────────────────────────────────────────
 (async () => {
@@ -308,45 +287,26 @@ function buildPortal() {
 
 // ─── START: raw WebXR session ──────────────────────────────────────────────
 startBtn.addEventListener('click', async () => {
-  startBtn.disabled=true; startBtn.textContent='starting…';
+  startBtn.disabled = true;
+  startBtn.textContent = 'starting…';
+
   initBabylon();
 
-  // ── 1. Request XR session ──
   const sessionInit = {
-    requiredFeatures: ['local-floor'],
-    optionalFeatures: ['image-tracking', 'hit-test', 'dom-overlay'],
+    requiredFeatures: ['local-floor', 'hit-test'],
+    optionalFeatures: ['dom-overlay'],
     domOverlay: { root: hud },
   };
 
-  let markerBitmap = null;
-  try {
-    markerBitmap = await createImageBitmap(markerCanvas);
-    sessionInit.trackedImages = [{
-      image: markerBitmap,
-      widthInMeters: CFG.markerW,
-    }];
-  } catch(e) {
-    console.warn('createImageBitmap failed, skipping image-tracking:', e);
-  }
-
   try {
     xrSession = await navigator.xr.requestSession('immersive-ar', sessionInit);
-  } catch(err) {
-    console.warn('Session with image-tracking failed, retrying:', err);
-    try {
-      delete sessionInit.trackedImages;
-      sessionInit.optionalFeatures = ['hit-test','dom-overlay'];
-      xrSession = await navigator.xr.requestSession('immersive-ar', sessionInit);
-      markerBitmap = null;
-    } catch(err2) {
-      splash.style.display='flex';
-      startBtn.disabled=false; startBtn.textContent='START AR';
-      fail('Could not start AR session:\n' + (err2.message||err2));
-      return;
-    }
+  } catch (err) {
+    fail('Could not start AR:\n' + err.message);
+    startBtn.disabled = false;
+    startBtn.textContent = 'START AR';
+    return;
   }
 
-  // ── 2. Hook Babylon's GL context ──
   const gl = engine._gl;
   await gl.makeXRCompatible();
 
@@ -356,115 +316,106 @@ startBtn.addEventListener('click', async () => {
     depth: true,
     stencil: true,
   });
+
   await xrSession.updateRenderState({ baseLayer: xrLayer });
 
-  // ── 3. Reference space ──
   try {
     xrRefSpace = await xrSession.requestReferenceSpace('local-floor');
-  } catch(_) {
+  } catch {
     xrRefSpace = await xrSession.requestReferenceSpace('local');
   }
 
-  // ── 4. Image tracking setup ──
-  let usingImageTracking = false;
-  if (markerBitmap && xrSession.supportedFrameFeatures?.has('image-tracking') !== false) {
-    usingImageTracking = true;
-  }
+  const viewerSpace = await xrSession.requestReferenceSpace('viewer');
+  const hitTestSource = await xrSession.requestHitTestSource({
+    space: viewerSpace,
+  });
 
-  // ── 5. Hit-test fallback (tap to place) ──
-  let hitTestSource = null;
-  if (!usingImageTracking) {
-    try {
-      const htRefSpace = await xrSession.requestReferenceSpace('viewer');
-      hitTestSource = await xrSession.requestHitTestSource({ space: htRefSpace });
-      scanTxt.textContent = 'tap floor to place portal';
-    } catch(_) {
-      scanTxt.textContent = 'tracking unavailable';
-    }
-  }
-
-  canvas.addEventListener('touchend', () => {
-    if (lastHitPose && !usingImageTracking) {
-      applyXRPoseToNode(lastHitPose.transform, portalRoot);
-      markerTracked = true;
-      scanRing.style.display = 'none';
-    }
-  }, { passive: true });
-  let lastHitPose = null;
-
-  // ── 6. Show HUD, hide splash ──
   splash.style.display = 'none';
-  hud.style.display    = 'block';
+  hud.style.display = 'block';
+
+  scanTxt.textContent = 'move phone to find surface';
   setStatus('scanning…');
 
-  // ── 7. XR frame loop ──
+  let placed = false;
+  let lastHitPose = null;
+  let reticle;
+
+  // ── Reticle (visual feedback)
+  reticle = BABYLON.MeshBuilder.CreateTorus('reticle', {
+    diameter: 0.15,
+    thickness: 0.01,
+  }, scene);
+  reticle.material = new BABYLON.StandardMaterial('retMat', scene);
+  reticle.material.emissiveColor = new BABYLON.Color3(0, 1, 0);
+  reticle.isVisible = false;
+
+  canvas.addEventListener('touchend', () => {
+    if (lastHitPose && !placed) {
+      applyXRPoseToNode(lastHitPose.transform, portalRoot);
+      portalRoot.setEnabled(true);
+
+      placed = true;
+
+      scanRing.style.display = 'none';
+      reticle.isVisible = false;
+      setStatus('portal placed');
+    }
+  }, { passive: true });
+
+  portalRoot.setEnabled(false);
+
   let orbT = 0;
+
   xrSession.requestAnimationFrame(function onXRFrame(time, frame) {
     xrSession.requestAnimationFrame(onXRFrame);
 
     const pose = frame.getViewerPose(xrRefSpace);
     if (!pose) return;
-    camPose = pose;
 
-    // Hit test results (Fallback)
-    if (hitTestSource) {
-      const hits = frame.getHitTestResults(hitTestSource);
-      lastHitPose = hits.length ? hits[0].getPose(xrRefSpace) : null;
-    }
-
-    // Image Tracking Results
-    if (usingImageTracking) {
-      const results = frame.getImageTrackingResults();
-      let trackingFound = false;
-
-      for (const result of results) {
-        if (result.trackingState === "tracked") {
-          const imgPose = frame.getPose(result.imageSpace, xrRefSpace);
-          if (imgPose) {
-            applyXRPoseToNode(imgPose.transform, portalRoot);
-            
-            if (!markerTracked) {
-              markerTracked = true;
-              scanRing.style.display = 'none';
-            }
-            trackingFound = true;
-            break; 
-          }
-        }
-      }
-
-      if (!trackingFound && markerTracked) {
-        markerTracked = false;
-        scanRing.style.display = 'flex';
-        scanTxt.textContent = 'marker lost — keep scanning';
-      }
-    }
-
-    // Update Babylon camera from XR pose
-    const view = pose.views[0]; 
+    const view = pose.views[0];
     updateBabylonCamera(view);
 
-    // Animate orb
+    // ── Hit test
+    const hits = frame.getHitTestResults(hitTestSource);
+
+    if (!placed) {
+      if (hits.length > 0) {
+        lastHitPose = hits[0].getPose(xrRefSpace);
+
+        if (lastHitPose) {
+          applyXRPoseToNode(lastHitPose.transform, reticle);
+          reticle.isVisible = true;
+
+          scanTxt.textContent = 'tap to place portal';
+          setStatus('surface detected');
+        }
+      } else {
+        reticle.isVisible = false;
+        scanTxt.textContent = 'move phone to find surface';
+      }
+    }
+
+    // ── Animate orb
     orbT += 0.016;
     if (orbMesh) {
       orbMesh.position.y = 0.15 + Math.sin(orbT) * 0.12;
       orbMesh.rotation.y = orbT * 0.5;
     }
 
-    // Proximity check
-    if (markerTracked || (!usingImageTracking && lastHitPose)) {
-      const camPos  = scene.activeCamera.position;
+    // ── Portal distance check (only after placement)
+    if (placed) {
+      const camPos = scene.activeCamera.position;
       const portPos = portalRoot.getAbsolutePosition()
-        .add(new BABYLON.Vector3(0, CFG.portalH/2, 0));
+        .add(new BABYLON.Vector3(0, CFG.portalH / 2, 0));
+
       const dist = BABYLON.Vector3.Distance(camPos, portPos);
 
-      if (!insidePortal && dist < CFG.enterDist)         enterPortal();
-      else if (insidePortal && dist > CFG.enterDist*1.5) exitPortal();
+      if (!insidePortal && dist < CFG.enterDist) enterPortal();
+      else if (insidePortal && dist > CFG.enterDist * 1.5) exitPortal();
 
       setStatus(`dist: ${dist.toFixed(2)}m | ${insidePortal ? 'inside ●' : 'outside ○'}`);
     }
 
-    // Render Babylon into the XR framebuffer
     gl.bindFramebuffer(gl.FRAMEBUFFER, xrLayer.framebuffer);
     engine.beginFrame();
     scene.render();
@@ -522,7 +473,6 @@ async function endSession() {
   try { await xrSession?.end(); } catch(_) {}
 }
 function onSessionEnd() {
-  insidePortal = markerTracked = false;
   hud.style.display    = 'none';
   splash.style.display = 'flex';
   startBtn.disabled    = false;
