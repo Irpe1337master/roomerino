@@ -257,21 +257,35 @@ startBtn.addEventListener('click', async () => {
 
   // ✅ FIXED INPUT
   xrSession.addEventListener('select', () => {
-    if (!lastHitPose || placed) return;
+  if (!lastHitPose || placed) return;
 
-    applyPose(lastHitPose.transform, portalRoot);
+  const pos = lastHitPose.transform.position;
 
-    // 🔥 KEY FIX: make door upright
-    portalRoot.rotationQuaternion =
-      BABYLON.Quaternion.FromEulerAngles(0, Math.PI, 0);
+  // ✅ set position ONLY
+  portalRoot.position.set(pos.x, pos.y, pos.z);
 
-    portalRoot.setEnabled(true);
+  // ✅ make portal face camera
+  const camPos = scene.activeCamera.position;
 
-    placed = true;
-    scanRing.style.display = 'none';
-    reticle.isVisible = false;
-    setStatus('portal placed');
-  });
+  const dir = new BABYLON.Vector3(
+    camPos.x - pos.x,
+    0,
+    camPos.z - pos.z
+  ).normalize();
+
+  const angle = Math.atan2(dir.x, dir.z);
+
+  portalRoot.rotationQuaternion =
+    BABYLON.Quaternion.FromEulerAngles(0, angle, 0);
+
+  portalRoot.setEnabled(true);
+
+  placed = true;
+  scanRing.style.display = 'none';
+  reticle.isVisible = false;
+
+  setStatus('portal placed');
+});
 
   xrSession.requestAnimationFrame(function loop(t, frame) {
     xrSession.requestAnimationFrame(loop);
