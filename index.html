@@ -2,511 +2,485 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>AR Portal — Babylon.js</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no" />
+  <meta name="mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <title>AR Portal</title>
   <style>
-    * { margin: 0; padding: 0; box-sizing: border-box; }
+    *, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
     html, body { width: 100%; height: 100%; overflow: hidden; background: #000; font-family: monospace; }
-    #renderCanvas { width: 100%; height: 100%; display: block; touch-action: none; }
 
-    #overlay {
-      position: fixed; top: 0; left: 0; width: 100%; height: 100%;
-      pointer-events: none; z-index: 10;
+    #renderCanvas {
+      width: 100%; height: 100%; display: block;
+      touch-action: none; position: fixed; top: 0; left: 0;
     }
-    #status {
-      position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%);
-      background: rgba(0,0,0,0.65); color: #7ee8a2; font-size: 12px;
-      padding: 10px 20px; border-radius: 8px; letter-spacing: 0.05em;
-      pointer-events: none; text-align: center; line-height: 1.8;
+
+    /* ── SPLASH ── */
+    #splash {
+      position: fixed; inset: 0; z-index: 100;
+      background: #0a0a10;
+      display: flex; flex-direction: column;
+      align-items: center; justify-content: center;
+      padding: 32px 24px; gap: 0;
+    }
+    #splash h1 {
+      font-size: 26px; letter-spacing: 0.18em;
+      color: #fff; font-weight: 400; margin-bottom: 4px;
+    }
+    #splash .sub {
+      font-size: 11px; color: rgba(255,255,255,0.3);
+      letter-spacing: 0.1em; margin-bottom: 36px;
+    }
+    #markerPreview {
+      width: 160px; height: 160px;
+      border: 1.5px solid rgba(255,255,255,0.15);
+      border-radius: 10px; margin-bottom: 12px;
+      image-rendering: pixelated; cursor: pointer;
+    }
+    #splash .hint {
+      font-size: 11px; color: rgba(255,255,255,0.38);
+      letter-spacing: 0.05em; margin-bottom: 36px;
+      text-align: center; line-height: 1.9;
     }
     #startBtn {
-      position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%);
-      background: rgba(0,0,0,0.8); border: 1px solid rgba(255,255,255,0.2);
-      color: #fff; font-family: monospace; font-size: 14px;
-      padding: 16px 36px; border-radius: 8px; cursor: pointer;
-      letter-spacing: 0.08em; transition: background 0.2s;
-      z-index: 20;
+      width: 100%; max-width: 300px;
+      padding: 18px; font-size: 15px; font-family: monospace;
+      letter-spacing: 0.12em; border-radius: 12px; border: none;
+      background: #fff; color: #000; cursor: pointer;
+      font-weight: 700; transition: opacity 0.15s; -webkit-appearance: none;
     }
-    #startBtn:hover { background: rgba(40,40,40,0.95); }
-    #startBtn.hidden { display: none; }
-    #instructions {
-      position: fixed; top: 24px; left: 50%; transform: translateX(-50%);
-      background: rgba(0,0,0,0.6); color: rgba(255,255,255,0.7);
-      font-size: 11px; padding: 8px 18px; border-radius: 6px;
-      letter-spacing: 0.05em; text-align: center; pointer-events: none;
-      max-width: 320px; line-height: 1.7;
+    #startBtn:active { opacity: 0.7; }
+    #startBtn:disabled { opacity: 0.3; cursor: default; }
+    #noXrMsg {
+      margin-top: 14px; font-size: 11px;
+      color: rgba(255,100,100,0.8); text-align: center;
+      letter-spacing: 0.04em; display: none; line-height: 1.8;
     }
-    #markerHint {
-      position: fixed; bottom: 90px; left: 50%; transform: translateX(-50%);
-      background: rgba(0,0,0,0.55); color: rgba(255,200,80,0.9);
-      font-size: 11px; padding: 6px 16px; border-radius: 6px;
-      letter-spacing: 0.04em; pointer-events: none; display: none;
+
+    /* ── HUD ── */
+    #hud { position: fixed; inset: 0; z-index: 50; pointer-events: none; display: none; }
+
+    #statusBar {
+      position: absolute;
+      bottom: max(28px, env(safe-area-inset-bottom));
+      left: 50%; transform: translateX(-50%);
+      background: rgba(0,0,0,0.6); color: rgba(120,240,160,0.9);
+      font-size: 11px; padding: 10px 22px; border-radius: 30px;
+      letter-spacing: 0.06em; white-space: nowrap;
+      max-width: 88vw; overflow: hidden; text-overflow: ellipsis;
     }
+
+    #scanPrompt {
+      position: absolute; top: 50%; left: 50%;
+      transform: translate(-50%, -50%);
+      display: flex; flex-direction: column;
+      align-items: center; gap: 18px;
+    }
+    .scanRing {
+      width: 190px; height: 190px; border-radius: 50%;
+      border: 1.5px solid rgba(255,255,255,0.28);
+      display: flex; align-items: center; justify-content: center;
+      animation: pulse 2s ease-in-out infinite;
+    }
+    .scanRing svg { width: 52px; height: 52px; opacity: 0.55; }
+    @keyframes pulse {
+      0%,100% { transform: scale(1);    border-color: rgba(255,255,255,0.28); }
+      50%      { transform: scale(1.06); border-color: rgba(255,255,255,0.55); }
+    }
+    #scanLabel { font-size: 12px; color: rgba(255,255,255,0.5); letter-spacing: 0.08em; }
+
+    #insideOverlay {
+      position: absolute; inset: 0;
+      background: rgba(20,80,200,0.10); display: none; pointer-events: none;
+    }
+    #insideLabel {
+      position: absolute;
+      top: max(20px, env(safe-area-inset-top));
+      left: 50%; transform: translateX(-50%);
+      color: rgba(160,210,255,0.85); font-size: 12px;
+      letter-spacing: 0.12em; display: none;
+    }
+
+    #exitBtn {
+      position: absolute;
+      top: max(16px, env(safe-area-inset-top));
+      right: max(16px, env(safe-area-inset-right));
+      background: rgba(0,0,0,0.55); border: 1px solid rgba(255,255,255,0.2);
+      color: #fff; font-family: monospace; font-size: 12px;
+      padding: 11px 20px; border-radius: 30px; cursor: pointer;
+      pointer-events: auto; letter-spacing: 0.08em; -webkit-appearance: none;
+    }
+    #exitBtn:active { background: rgba(50,50,50,0.8); }
   </style>
 </head>
 <body>
 
 <canvas id="renderCanvas"></canvas>
 
-<div id="overlay">
-  <div id="instructions">
-    Point your camera at the marker image.<br>
-    Walk toward the portal to enter the virtual room.
-  </div>
-  <div id="markerHint">&#9432; No marker detected — scan the printed image</div>
+<div id="splash">
+  <h1>AR PORTAL</h1>
+  <p class="sub">babylon.js · webxr</p>
+  <canvas id="markerPreview" width="256" height="256" title="Tap to download marker"></canvas>
+  <p class="hint">
+    Print this marker (~15 cm wide) or show it on another screen.<br>
+    Point your phone camera at it to open the portal.
+  </p>
+  <button id="startBtn" disabled>checking AR…</button>
+  <p id="noXrMsg"></p>
 </div>
 
-<div id="status">initializing…</div>
-<button id="startBtn">START AR SESSION</button>
+<div id="hud">
+  <div id="insideOverlay"></div>
+  <div id="insideLabel">● INSIDE PORTAL</div>
+  <div id="scanPrompt">
+    <div class="scanRing">
+      <svg viewBox="0 0 48 48" fill="none" xmlns="http://www.w3.org/2000/svg">
+        <rect x="4"  y="4"  width="12" height="3" fill="white"/>
+        <rect x="4"  y="4"  width="3"  height="12" fill="white"/>
+        <rect x="32" y="4"  width="12" height="3" fill="white"/>
+        <rect x="41" y="4"  width="3"  height="12" fill="white"/>
+        <rect x="4"  y="41" width="12" height="3" fill="white"/>
+        <rect x="4"  y="32" width="3"  height="12" fill="white"/>
+        <rect x="32" y="41" width="12" height="3" fill="white"/>
+        <rect x="41" y="32" width="3"  height="12" fill="white"/>
+      </svg>
+    </div>
+    <span id="scanLabel">scanning for marker…</span>
+  </div>
+  <div id="statusBar">initializing</div>
+  <button id="exitBtn" onclick="endSession()">END AR</button>
+</div>
 
 <script src="https://cdn.babylonjs.com/babylon.js"></script>
-<script src="https://cdn.babylonjs.com/babylonjs.materials.min.js"></script>
 
 <script>
-// ─── CONFIG ────────────────────────────────────────────────────────────────
+'use strict';
+
 const CFG = {
-  portalWidth:      0.80,   // metres
-  portalHeight:     1.60,   // metres (door-sized)
-  roomSize:         3.0,    // cube side length in metres
-  enterThreshold:   0.55,   // metres — camera distance to trigger transition
-  markerWidthM:     0.15,   // physical marker width in metres
-  wallColors: {
-    back:   new BABYLON.Color3(0.07, 0.12, 0.28),
-    left:   new BABYLON.Color3(0.05, 0.09, 0.22),
-    right:  new BABYLON.Color3(0.05, 0.09, 0.22),
-    floor:  new BABYLON.Color3(0.03, 0.06, 0.15),
-    ceil:   new BABYLON.Color3(0.08, 0.14, 0.30),
-  },
-  stencilRef: 1,
+  portalWidth:    0.80,
+  portalHeight:   1.60,
+  roomSize:       3.0,
+  enterThreshold: 0.55,
+  markerWidthM:   0.15,
+  stencilRef:     1,
 };
 
-// ─── GLOBALS ───────────────────────────────────────────────────────────────
-const canvas  = document.getElementById('renderCanvas');
-const statusEl = document.getElementById('status');
-const startBtn = document.getElementById('startBtn');
-const markerHint = document.getElementById('markerHint');
-
-let engine, scene, xrHelper;
+let engine, scene, xrHelper, xrSession;
 let portalRoot, roomRoot;
-let insidePortal = false;
+let insidePortal  = false;
+let markerTracked = false;
 
-// ─── ENGINE & SCENE ────────────────────────────────────────────────────────
-function initEngine() {
-  engine = new BABYLON.Engine(canvas, true, { stencil: true });
-  scene  = new BABYLON.Scene(engine);
-  scene.clearColor = new BABYLON.Color4(0, 0, 0, 0);
+const $ = id => document.getElementById(id);
+const splash         = $('splash');
+const startBtn       = $('startBtn');
+const noXrMsg        = $('noXrMsg');
+const hud            = $('hud');
+const statusBar      = $('statusBar');
+const scanPrompt     = $('scanPrompt');
+const scanLabel      = $('scanLabel');
+const insideOverlay  = $('insideOverlay');
+const insideLabel    = $('insideLabel');
+const markerCanvas   = $('markerPreview');
 
-  // Ambient light for the virtual room
-  const ambient = new BABYLON.HemisphericLight(
-    'ambient', new BABYLON.Vector3(0, 1, 0), scene
-  );
-  ambient.intensity = 0.6;
-  ambient.diffuse   = new BABYLON.Color3(0.5, 0.7, 1.0);
-
-  // Point light inside the room
-  const roomLight = new BABYLON.PointLight(
-    'roomLight', new BABYLON.Vector3(0, 1.2, -0.5), scene
-  );
-  roomLight.intensity = 1.4;
-  roomLight.diffuse   = new BABYLON.Color3(0.6, 0.8, 1.0);
-  roomLight.range     = 6;
-
-  buildPortal();
-
-  engine.runRenderLoop(() => scene.render());
-  window.addEventListener('resize', () => engine.resize());
-}
-
-// ─── PORTAL & ROOM ─────────────────────────────────────────────────────────
-function buildPortal() {
-  // Root transform — will be moved to the tracked marker pose each frame
-  portalRoot = new BABYLON.TransformNode('portalRoot', scene);
-
-  // ── 1. STENCIL MASK (door aperture) ──────────────────────────────────────
-  // A flat plane the size of the door, rendered only into the stencil buffer.
-  // Everything behind it (the room) is only shown where stencil == CFG.stencilRef.
-  const maskMat = new BABYLON.StandardMaterial('maskMat', scene);
-  maskMat.disableColorWrite       = true;   // invisible — only writes stencil
-  maskMat.disableDepthWrite       = false;
-  // Stencil: always pass, replace with ref value
-  maskMat.stencil                 = true;
-  maskMat.stencilMask             = 0xFF;
-  maskMat.stencilFunc             = BABYLON.Engine.ALWAYS;
-  maskMat.stencilOpStencilFail    = BABYLON.Engine.KEEP;
-  maskMat.stencilOpDepthFail      = BABYLON.Engine.KEEP;
-  maskMat.stencilOpStencilDepthPass = BABYLON.Engine.REPLACE;
-  maskMat.stencilFuncRef          = CFG.stencilRef;
-  maskMat.stencilFuncMask         = 0xFF;
-  maskMat.backFaceCulling         = false;
-
-  const aperture = BABYLON.MeshBuilder.CreatePlane('aperture', {
-    width:  CFG.portalWidth,
-    height: CFG.portalHeight,
-    sideOrientation: BABYLON.Mesh.DOUBLESIDE,
-  }, scene);
-  aperture.material = maskMat;
-  aperture.parent   = portalRoot;
-  // Plane sits in XY, centre it vertically so bottom is at y=0 (floor)
-  aperture.position.y = CFG.portalHeight / 2;
-  aperture.renderingGroupId = 0;   // render stencil mask first
-
-  // ── 2. DOOR FRAME ─────────────────────────────────────────────────────────
-  const frameMat = new BABYLON.StandardMaterial('frameMat', scene);
-  frameMat.emissiveColor  = new BABYLON.Color3(0.9, 0.35, 0.1);
-  frameMat.disableLighting = true;
-  frameMat.backFaceCulling = false;
-
-  const frameThk = 0.035;
-  const fW = CFG.portalWidth, fH = CFG.portalHeight;
-
-  // Build frame from 4 boxes (top, bottom, left, right)
-  const frameSegments = [
-    { name: 'fTop',   w: fW + frameThk*2, h: frameThk, pos: [0, fH + frameThk/2, 0.001] },
-    { name: 'fBot',   w: fW + frameThk*2, h: frameThk, pos: [0, -frameThk/2, 0.001] },
-    { name: 'fLeft',  w: frameThk, h: fH,              pos: [-(fW/2 + frameThk/2), fH/2, 0.001] },
-    { name: 'fRight', w: frameThk, h: fH,              pos: [fW/2 + frameThk/2, fH/2, 0.001] },
-  ];
-  frameSegments.forEach(seg => {
-    const box = BABYLON.MeshBuilder.CreateBox(seg.name, {
-      width: seg.w, height: seg.h, depth: frameThk * 0.5
-    }, scene);
-    box.material = frameMat;
-    box.parent   = portalRoot;
-    box.position = new BABYLON.Vector3(...seg.pos);
-    box.renderingGroupId = 2;
-  });
-
-  // ── 3. VIRTUAL ROOM ────────────────────────────────────────────────────────
-  roomRoot = new BABYLON.TransformNode('roomRoot', scene);
-  roomRoot.parent   = portalRoot;
-  roomRoot.position = new BABYLON.Vector3(0, CFG.portalHeight / 2, -CFG.roomSize / 2 + 0.01);
-
-  const rs = CFG.roomSize;
-
-  // Helper: single-sided interior panel
-  function makeWall(name, w, h, pos, rot, color) {
-    const mat = new BABYLON.StandardMaterial(name + 'Mat', scene);
-    mat.emissiveColor   = color;
-    mat.diffuseColor    = color;
-    // Stencil: only render where stencil == ref (inside the portal aperture)
-    mat.stencil             = true;
-    mat.stencilMask         = 0xFF;
-    mat.stencilFunc         = BABYLON.Engine.EQUAL;
-    mat.stencilFuncRef      = CFG.stencilRef;
-    mat.stencilFuncMask     = 0xFF;
-    mat.stencilOpStencilFail    = BABYLON.Engine.KEEP;
-    mat.stencilOpDepthFail      = BABYLON.Engine.KEEP;
-    mat.stencilOpStencilDepthPass = BABYLON.Engine.KEEP;
-    mat.backFaceCulling         = false;  // interior visible from inside
-
-    const plane = BABYLON.MeshBuilder.CreatePlane(name, {
-      width: w, height: h,
-      sideOrientation: BABYLON.Mesh.FRONTSIDE,
-    }, scene);
-    plane.material        = mat;
-    plane.parent          = roomRoot;
-    plane.position        = new BABYLON.Vector3(...pos);
-    plane.rotation        = new BABYLON.Vector3(...rot);
-    plane.renderingGroupId = 1;  // after stencil mask, before frame
-    return plane;
-  }
-
-  // Back wall
-  makeWall('back',  rs, rs, [0, 0, -rs/2], [0, 0, 0], CFG.wallColors.back);
-  // Front wall (behind camera when inside — open portal side)
-  // Omit front wall so you can see out when inside
-  // Left wall
-  makeWall('left',  rs, rs, [-rs/2, 0, 0], [0, Math.PI/2, 0], CFG.wallColors.left);
-  // Right wall
-  makeWall('right', rs, rs, [rs/2,  0, 0], [0, -Math.PI/2, 0], CFG.wallColors.right);
-  // Floor
-  makeWall('floor', rs, rs, [0, -rs/2, 0], [Math.PI/2, 0, 0], CFG.wallColors.floor);
-  // Ceiling
-  makeWall('ceil',  rs, rs, [0, rs/2, 0],  [-Math.PI/2, 0, 0], CFG.wallColors.ceil);
-
-  // ── 4. ROOM DETAILS ────────────────────────────────────────────────────────
-  // Floating glowing orb in the room centre
-  const orbMat = new BABYLON.StandardMaterial('orbMat', scene);
-  orbMat.emissiveColor = new BABYLON.Color3(0.3, 0.7, 1.0);
-  orbMat.stencil       = true;
-  orbMat.stencilMask   = 0xFF;
-  orbMat.stencilFunc   = BABYLON.Engine.EQUAL;
-  orbMat.stencilFuncRef = CFG.stencilRef;
-  orbMat.stencilFuncMask = 0xFF;
-  orbMat.stencilOpStencilFail = BABYLON.Engine.KEEP;
-  orbMat.stencilOpDepthFail   = BABYLON.Engine.KEEP;
-  orbMat.stencilOpStencilDepthPass = BABYLON.Engine.KEEP;
-
-  const orb = BABYLON.MeshBuilder.CreateSphere('orb', { diameter: 0.18 }, scene);
-  orb.material = orbMat;
-  orb.parent   = roomRoot;
-  orb.position = new BABYLON.Vector3(0, 0.15, -rs * 0.35);
-  orb.renderingGroupId = 1;
-
-  // Animate the orb
-  scene.registerBeforeRender(() => {
-    orb.position.y = 0.15 + Math.sin(performance.now() * 0.001) * 0.12;
-    orb.rotation.y += 0.01;
-  });
-
-  // Grid lines on the floor for depth cue
-  addFloorGrid();
-}
-
-function addFloorGrid() {
-  // Simple grid using line system, stencil-masked
-  const gridMat = new BABYLON.StandardMaterial('gridMat', scene);
-  gridMat.emissiveColor = new BABYLON.Color3(0.1, 0.25, 0.55);
-  gridMat.stencil       = true;
-  gridMat.stencilFunc   = BABYLON.Engine.EQUAL;
-  gridMat.stencilFuncRef = CFG.stencilRef;
-  gridMat.stencilFuncMask = 0xFF;
-  gridMat.stencilMask   = 0xFF;
-  gridMat.stencilOpStencilFail = BABYLON.Engine.KEEP;
-  gridMat.stencilOpDepthFail   = BABYLON.Engine.KEEP;
-  gridMat.stencilOpStencilDepthPass = BABYLON.Engine.KEEP;
-
-  const rs = CFG.roomSize, step = 0.4, lines = [];
-  for (let x = -rs/2; x <= rs/2; x += step) {
-    lines.push([ new BABYLON.Vector3(x, -rs/2 + 0.005, -rs/2),
-                 new BABYLON.Vector3(x, -rs/2 + 0.005,  rs/2) ]);
-  }
-  for (let z = -rs/2; z <= rs/2; z += step) {
-    lines.push([ new BABYLON.Vector3(-rs/2, -rs/2 + 0.005, z),
-                 new BABYLON.Vector3( rs/2, -rs/2 + 0.005, z) ]);
-  }
-  const lineSystem = BABYLON.MeshBuilder.CreateLineSystem('grid', { lines }, scene);
-  lineSystem.color  = new BABYLON.Color3(0.1, 0.3, 0.7);
-  lineSystem.parent = roomRoot;
-  lineSystem.renderingGroupId = 1;
-}
-
-// ─── WEBXR SESSION ─────────────────────────────────────────────────────────
-async function startAR() {
-  startBtn.classList.add('hidden');
-  setStatus('requesting AR session…');
-
-  try {
-    xrHelper = await scene.createDefaultXRExperienceAsync({
-      uiOptions: { sessionMode: 'immersive-ar' },
-      optionalFeatures: true,
-    });
-
-    const fm = xrHelper.baseExperience.featuresManager;
-
-    // ── Image tracking ────────────────────────────────────────────────────
-    let imageTracking = null;
-    try {
-      // Generate a simple marker image programmatically (checkerboard)
-      const markerCanvas = document.createElement('canvas');
-      markerCanvas.width = markerCanvas.height = 256;
-      const mctx = markerCanvas.getContext('2d');
-      drawCheckerboard(mctx, 256);
-      const markerImg = new Image();
-      markerImg.src = markerCanvas.toDataURL();
-      await new Promise(r => { markerImg.onload = r; });
-
-      imageTracking = fm.enableFeature(
-        BABYLON.WebXRImageTracking.Name, 'latest', {
-          images: [{ src: markerImg, estimatedRealWorldWidth: CFG.markerWidthM }]
-        }
-      );
-
-      imageTracking.onTrackedImageUpdatedObservable.add(image => {
-        if (image.transformationMatrix) {
-          // Decompose the 4x4 tracking matrix into position + rotation
-          const mat = BABYLON.Matrix.FromArray(image.transformationMatrix);
-          const pos = new BABYLON.Vector3();
-          const rot = new BABYLON.Quaternion();
-          const scl = new BABYLON.Vector3();
-          mat.decompose(scl, rot, pos);
-          portalRoot.position         = pos;
-          portalRoot.rotationQuaternion = rot;
-          markerHint.style.display = 'none';
-        }
-      });
-
-      imageTracking.onUntrackableImageFoundObservable.add(() => {
-        markerHint.style.display = 'block';
-      });
-
-      setStatus('AR active — scan the marker image');
-    } catch(e) {
-      console.warn('Image tracking unavailable:', e);
-      // Fallback: place portal 1.5m in front of camera on session start
-      setStatus('Image tracking N/A — portal placed ahead');
-      placePortalInFront();
-    }
-
-    // ── Per-frame: proximity check ─────────────────────────────────────────
-    xrHelper.baseExperience.sessionManager.onXRFrameObservable.add(() => {
-      const cam = xrHelper.baseExperience.camera;
-      if (!cam || !portalRoot) return;
-
-      const camPos    = cam.position;
-      const portalPos = portalRoot.getAbsolutePosition().add(
-        new BABYLON.Vector3(0, CFG.portalHeight / 2, 0)
-      );
-      const dist = BABYLON.Vector3.Distance(camPos, portalPos);
-
-      if (!insidePortal && dist < CFG.enterThreshold) {
-        enterPortal();
-      } else if (insidePortal && dist > CFG.enterThreshold * 1.4) {
-        exitPortal();
-      }
-
-      setStatus(
-        `tracking: ${imageTracking ? 'active' : 'fallback'} | ` +
-        `dist: ${dist.toFixed(2)}m | ` +
-        `state: ${insidePortal ? 'inside ●' : 'outside ○'}`
-      );
-    });
-
-    xrHelper.baseExperience.onStateChangedObservable.add(state => {
-      if (state === BABYLON.WebXRState.NOT_IN_XR) {
-        setStatus('session ended');
-        startBtn.classList.remove('hidden');
-      }
-    });
-
-  } catch (err) {
-    console.error(err);
-    setStatus('WebXR not available — running in desktop preview mode');
-    startDesktopPreview();
-  }
-}
-
-// ─── PORTAL TRANSITION ─────────────────────────────────────────────────────
-function enterPortal() {
-  insidePortal = true;
-  // When inside, show the room without stencil restriction
-  // (camera is now past the aperture — render everything)
-  scene.meshes.forEach(m => {
-    if (m.material && m.material.stencilFunc === BABYLON.Engine.EQUAL) {
-      m.material.stencilFunc = BABYLON.Engine.ALWAYS;
-    }
-  });
-  // Optionally fade the passthrough (if XR supports it)
-  try {
-    xrHelper.baseExperience.sessionManager.session.updateRenderState({
-      // depthFar / depthNear adjustments for immersive feel
-    });
-  } catch(_) {}
-}
-
-function exitPortal() {
-  insidePortal = false;
-  scene.meshes.forEach(m => {
-    if (m.material && m.material.stencilFunc === BABYLON.Engine.ALWAYS
-        && m.name !== 'aperture' && !m.name.startsWith('f')) {
-      m.material.stencilFunc = BABYLON.Engine.EQUAL;
-    }
-  });
-}
-
-// ─── FALLBACK: place portal 1.5 m ahead ────────────────────────────────────
-function placePortalInFront() {
-  if (!xrHelper) return;
-  const cam = xrHelper.baseExperience.camera;
-  if (!cam) return;
-  const fwd = cam.getDirection(BABYLON.Vector3.Forward());
-  portalRoot.position = cam.position.add(fwd.scale(1.5));
-  portalRoot.position.y = 0;
-  // Face toward camera
-  portalRoot.lookAt(cam.position);
-}
-
-// ─── DESKTOP PREVIEW MODE ──────────────────────────────────────────────────
-function startDesktopPreview() {
-  // Free camera for desktop testing
-  const camera = new BABYLON.ArcRotateCamera(
-    'devCam', -Math.PI / 2, Math.PI / 3, 3, BABYLON.Vector3.Zero(), scene
-  );
-  camera.attachControl(canvas, true);
-  camera.lowerRadiusLimit = 0.3;
-  camera.upperRadiusLimit = 6;
-
-  // Place portal at origin, facing camera
-  portalRoot.position = new BABYLON.Vector3(0, 0, 0);
-  portalRoot.rotation = new BABYLON.Vector3(0, 0, 0);
-
-  // Simple gray environment
-  const envMat = new BABYLON.StandardMaterial('env', scene);
-  envMat.diffuseColor = new BABYLON.Color3(0.15, 0.15, 0.18);
-  const ground = BABYLON.MeshBuilder.CreateGround('ground', { width: 10, height: 10 }, scene);
-  ground.material = envMat;
-  ground.position.y = 0;
-
-  scene.clearColor = new BABYLON.Color4(0.08, 0.08, 0.1, 1);
-
-  // Proximity check via pointer lock / camera distance
-  scene.registerBeforeRender(() => {
-    const dist = BABYLON.Vector3.Distance(
-      camera.position,
-      portalRoot.getAbsolutePosition().add(new BABYLON.Vector3(0, CFG.portalHeight/2, 0))
-    );
-    if (!insidePortal && dist < CFG.enterThreshold) enterPortal();
-    else if (insidePortal && dist > CFG.enterThreshold * 1.4) exitPortal();
-    setStatus(`desktop preview | dist: ${dist.toFixed(2)}m | ${insidePortal ? 'inside ●' : 'outside ○'}`);
-  });
-
-  setStatus('desktop preview — drag to orbit, scroll to zoom');
-}
-
-// ─── MARKER IMAGE GENERATOR ────────────────────────────────────────────────
-// Draws a simple asymmetric checkerboard (suitable for image tracking)
-function drawCheckerboard(ctx, size) {
-  const cells = 8;
-  const cell  = size / cells;
-  for (let r = 0; r < cells; r++) {
-    for (let c = 0; c < cells; c++) {
+// ── Marker drawing ──────────────────────────────────────────────────────────
+function drawMarker(ctx, size) {
+  const cell = size / 8;
+  for (let r = 0; r < 8; r++) {
+    for (let c = 0; c < 8; c++) {
       ctx.fillStyle = (r + c) % 2 === 0 ? '#fff' : '#000';
       ctx.fillRect(c * cell, r * cell, cell, cell);
     }
   }
-  // Asymmetric marker dot for orientation
-  ctx.fillStyle = '#f00';
+  ctx.fillStyle = '#ff2222';
   ctx.beginPath();
-  ctx.arc(cell * 1.5, cell * 1.5, cell * 0.4, 0, Math.PI * 2);
+  ctx.arc(cell * 1.5, cell * 1.5, cell * 0.38, 0, Math.PI * 2);
   ctx.fill();
-  // Label
-  ctx.fillStyle = '#333';
-  ctx.font = `bold ${Math.floor(cell * 0.7)}px monospace`;
+  ctx.fillStyle = '#111';
+  ctx.font = `bold ${Math.round(cell * 0.85)}px monospace`;
   ctx.textAlign = 'center';
-  ctx.fillText('AR', size / 2, size / 2 + cell * 0.25);
+  ctx.textBaseline = 'middle';
+  ctx.fillText('AR', size / 2, size / 2);
 }
 
-// ─── STATUS HELPER ─────────────────────────────────────────────────────────
-function setStatus(msg) {
-  statusEl.textContent = msg;
-}
+drawMarker(markerCanvas.getContext('2d'), 256);
 
-// ─── PRINT MARKER BUTTON ───────────────────────────────────────────────────
-// Inject a "print marker" link so users can get the image quickly
-window.addEventListener('DOMContentLoaded', () => {
-  const btn = document.createElement('button');
-  btn.textContent = 'SAVE MARKER IMAGE';
-  btn.style.cssText = `
-    position: fixed; top: 16px; right: 16px; z-index: 30;
-    background: rgba(0,0,0,0.75); color: #fff; border: 1px solid rgba(255,255,255,0.2);
-    font-family: monospace; font-size: 11px; padding: 8px 14px;
-    border-radius: 6px; cursor: pointer; letter-spacing: 0.06em;
-  `;
-  btn.onclick = () => {
-    const c = document.createElement('canvas');
-    c.width = c.height = 512;
-    drawCheckerboard(c.getContext('2d'), 512);
-    const a = document.createElement('a');
-    a.href     = c.toDataURL('image/png');
-    a.download = 'ar-portal-marker.png';
-    a.click();
-  };
-  document.body.appendChild(btn);
+markerCanvas.addEventListener('click', () => {
+  const c = document.createElement('canvas');
+  c.width = c.height = 512;
+  drawMarker(c.getContext('2d'), 512);
+  const a = document.createElement('a');
+  a.href = c.toDataURL('image/png');
+  a.download = 'ar-portal-marker.png';
+  a.click();
 });
 
-// ─── BOOT ──────────────────────────────────────────────────────────────────
-initEngine();
-startBtn.addEventListener('click', startAR);
+// ── XR support check ────────────────────────────────────────────────────────
+(async () => {
+  if (!navigator.xr) { showNoXR('WebXR not available.\nUse Chrome on Android over HTTPS.'); return; }
+  try {
+    const ok = await navigator.xr.isSessionSupported('immersive-ar');
+    if (ok) {
+      startBtn.disabled    = false;
+      startBtn.textContent = 'START AR';
+    } else {
+      showNoXR('immersive-ar not supported.\nTry Chrome on Android with ARCore.');
+    }
+  } catch(e) { showNoXR('AR check failed — use HTTPS.'); }
+})();
+
+function showNoXR(msg) {
+  startBtn.disabled    = true;
+  startBtn.textContent = 'AR UNAVAILABLE';
+  noXrMsg.style.display = 'block';
+  noXrMsg.textContent   = msg;
+}
+
+// ── Engine ──────────────────────────────────────────────────────────────────
+function initEngine() {
+  engine = new BABYLON.Engine($('renderCanvas'), true, {
+    stencil: true, alpha: true,
+    preserveDrawingBuffer: true, antialias: true,
+  });
+  scene = new BABYLON.Scene(engine);
+  scene.clearColor = new BABYLON.Color4(0, 0, 0, 0);
+
+  const amb = new BABYLON.HemisphericLight('amb', new BABYLON.Vector3(0,1,0), scene);
+  amb.intensity = 0.5;
+  amb.diffuse   = new BABYLON.Color3(0.4, 0.6, 1.0);
+
+  const pt = new BABYLON.PointLight('pt', new BABYLON.Vector3(0, 1.2, -0.5), scene);
+  pt.intensity = 1.6; pt.diffuse = new BABYLON.Color3(0.5, 0.75, 1.0); pt.range = 6;
+
+  buildPortal();
+  engine.runRenderLoop(() => scene.render());
+  window.addEventListener('resize', () => engine.resize());
+}
+
+// ── Portal construction ──────────────────────────────────────────────────────
+function buildPortal() {
+  portalRoot = new BABYLON.TransformNode('portalRoot', scene);
+  portalRoot.position.y = -999; // hidden until marker found
+
+  // Stencil aperture
+  const maskMat = new BABYLON.StandardMaterial('maskMat', scene);
+  maskMat.disableColorWrite         = true;
+  maskMat.stencil                   = true;
+  maskMat.stencilMask               = 0xFF;
+  maskMat.stencilFunc               = BABYLON.Engine.ALWAYS;
+  maskMat.stencilFuncRef            = CFG.stencilRef;
+  maskMat.stencilFuncMask           = 0xFF;
+  maskMat.stencilOpStencilFail      = BABYLON.Engine.KEEP;
+  maskMat.stencilOpDepthFail        = BABYLON.Engine.KEEP;
+  maskMat.stencilOpStencilDepthPass = BABYLON.Engine.REPLACE;
+  maskMat.backFaceCulling           = false;
+
+  const ap = BABYLON.MeshBuilder.CreatePlane('aperture', {
+    width: CFG.portalWidth, height: CFG.portalHeight,
+    sideOrientation: BABYLON.Mesh.DOUBLESIDE,
+  }, scene);
+  ap.material = maskMat; ap.parent = portalRoot;
+  ap.position.y = CFG.portalHeight / 2;
+  ap.renderingGroupId = 0;
+
+  // Frame
+  const frameMat = new BABYLON.StandardMaterial('frameMat', scene);
+  frameMat.emissiveColor = new BABYLON.Color3(1.0, 0.4, 0.1);
+  frameMat.disableLighting = true; frameMat.backFaceCulling = false;
+
+  const ft = 0.04, fW = CFG.portalWidth, fH = CFG.portalHeight;
+  [
+    { n:'fT', w:fW+ft*2, h:ft, p:[0, fH+ft/2, 0.002] },
+    { n:'fB', w:fW+ft*2, h:ft, p:[0, -ft/2,   0.002] },
+    { n:'fL', w:ft, h:fH,      p:[-(fW/2+ft/2), fH/2, 0.002] },
+    { n:'fR', w:ft, h:fH,      p:[fW/2+ft/2,   fH/2, 0.002] },
+  ].forEach(s => {
+    const b = BABYLON.MeshBuilder.CreateBox(s.n, {width:s.w,height:s.h,depth:ft*0.5}, scene);
+    b.material = frameMat; b.parent = portalRoot;
+    b.position = new BABYLON.Vector3(...s.p);
+    b.renderingGroupId = 2;
+  });
+
+  // Room
+  roomRoot = new BABYLON.TransformNode('roomRoot', scene);
+  roomRoot.parent   = portalRoot;
+  roomRoot.position = new BABYLON.Vector3(0, CFG.portalHeight/2, -(CFG.roomSize/2)+0.01);
+
+  const rs = CFG.roomSize;
+  function wall(name, w, h, pos, rx, ry) {
+    const mat = new BABYLON.StandardMaterial(name+'M', scene);
+    const cols = {back:new BABYLON.Color3(0.05,0.10,0.25), left:new BABYLON.Color3(0.04,0.08,0.20),
+                  right:new BABYLON.Color3(0.04,0.08,0.20), floor:new BABYLON.Color3(0.02,0.05,0.14),
+                  ceil:new BABYLON.Color3(0.07,0.12,0.28)};
+    mat.emissiveColor = cols[name] || new BABYLON.Color3(0.05,0.1,0.25);
+    mat.diffuseColor  = mat.emissiveColor;
+    mat.backFaceCulling = false;
+    mat.stencil = true; mat.stencilMask = 0xFF;
+    mat.stencilFunc = BABYLON.Engine.EQUAL; mat.stencilFuncRef = CFG.stencilRef; mat.stencilFuncMask = 0xFF;
+    mat.stencilOpStencilFail = BABYLON.Engine.KEEP; mat.stencilOpDepthFail = BABYLON.Engine.KEEP;
+    mat.stencilOpStencilDepthPass = BABYLON.Engine.KEEP;
+    const m = BABYLON.MeshBuilder.CreatePlane(name, {width:w,height:h,sideOrientation:BABYLON.Mesh.FRONTSIDE}, scene);
+    m.material = mat; m.parent = roomRoot;
+    m.position = new BABYLON.Vector3(...pos);
+    m.rotation = new BABYLON.Vector3(rx, ry, 0);
+    m.renderingGroupId = 1;
+  }
+  wall('back',  rs, rs, [0,0,-rs/2],       0,           0);
+  wall('left',  rs, rs, [-rs/2,0,0],       0,           Math.PI/2);
+  wall('right', rs, rs, [rs/2,0,0],        0,          -Math.PI/2);
+  wall('floor', rs, rs, [0,-rs/2,0],       Math.PI/2,   0);
+  wall('ceil',  rs, rs, [0, rs/2,0],      -Math.PI/2,   0);
+
+  // Orb
+  const orbMat = new BABYLON.StandardMaterial('orbM', scene);
+  orbMat.emissiveColor = new BABYLON.Color3(0.3,0.7,1.0); orbMat.backFaceCulling = false;
+  orbMat.stencil = true; orbMat.stencilMask = 0xFF;
+  orbMat.stencilFunc = BABYLON.Engine.EQUAL; orbMat.stencilFuncRef = CFG.stencilRef; orbMat.stencilFuncMask = 0xFF;
+  orbMat.stencilOpStencilFail = BABYLON.Engine.KEEP; orbMat.stencilOpDepthFail = BABYLON.Engine.KEEP;
+  orbMat.stencilOpStencilDepthPass = BABYLON.Engine.KEEP;
+  const orb = BABYLON.MeshBuilder.CreateSphere('orb', {diameter:0.18}, scene);
+  orb.material = orbMat; orb.parent = roomRoot;
+  orb.position = new BABYLON.Vector3(0, 0.15, -rs*0.35);
+  orb.renderingGroupId = 1;
+  let ot = 0;
+  scene.registerBeforeRender(() => { ot += 0.016; orb.position.y = 0.15 + Math.sin(ot)*0.12; orb.rotation.y = ot*0.5; });
+
+  // Floor grid
+  const lines = [];
+  for (let x = -rs/2; x <= rs/2+0.001; x += 0.4)
+    lines.push([new BABYLON.Vector3(x,-rs/2+0.005,-rs/2), new BABYLON.Vector3(x,-rs/2+0.005,rs/2)]);
+  for (let z = -rs/2; z <= rs/2+0.001; z += 0.4)
+    lines.push([new BABYLON.Vector3(-rs/2,-rs/2+0.005,z), new BABYLON.Vector3(rs/2,-rs/2+0.005,z)]);
+  const ls = BABYLON.MeshBuilder.CreateLineSystem('grid',{lines},scene);
+  ls.color = new BABYLON.Color3(0.1,0.3,0.75); ls.parent = roomRoot; ls.renderingGroupId = 1;
+}
+
+// ── Start AR ─────────────────────────────────────────────────────────────────
+startBtn.addEventListener('click', async () => {
+  startBtn.disabled = true;
+  startBtn.textContent = 'starting…';
+  initEngine();
+
+  try {
+    xrHelper = await scene.createDefaultXRExperienceAsync({
+      uiOptions: { sessionMode: 'immersive-ar', referenceSpaceType: 'local-floor' },
+      optionalFeatures: ['image-tracking', 'hit-test'],
+    });
+    xrSession = xrHelper.baseExperience.sessionManager.session;
+
+    splash.style.display = 'none';
+    hud.style.display    = 'block';
+    setStatus('scanning for marker…');
+
+    const fm = xrHelper.baseExperience.featuresManager;
+
+    // Image tracking
+    try {
+      const img = new Image();
+      img.src = markerCanvas.toDataURL('image/png');
+      await new Promise(r => { img.onload = r; });
+
+      const it = fm.enableFeature(BABYLON.WebXRImageTracking.Name, 'latest', {
+        images: [{ src: img, estimatedRealWorldWidth: CFG.markerWidthM }]
+      });
+
+      it.onTrackedImageUpdatedObservable.add(tracked => {
+        if (!tracked.transformationMatrix) return;
+        markerTracked = true;
+        scanPrompt.style.display = 'none';
+        const mat = BABYLON.Matrix.FromArray(tracked.transformationMatrix);
+        const pos = new BABYLON.Vector3(), rot = new BABYLON.Quaternion(), scl = new BABYLON.Vector3();
+        mat.decompose(scl, rot, pos);
+        portalRoot.position = pos;
+        portalRoot.rotationQuaternion = rot;
+      });
+
+      it.onUntrackableImageFoundObservable.add(() => {
+        markerTracked = false;
+        scanPrompt.style.display = 'flex';
+        scanLabel.textContent    = 'marker lost — keep scanning';
+      });
+
+    } catch(e) {
+      console.warn('Image tracking N/A, hit-test fallback:', e);
+      scanLabel.textContent = 'tap a flat surface to place portal';
+      try {
+        const ht = fm.enableFeature(BABYLON.WebXRHitTest.Name, 'latest');
+        let lastHit = null;
+        ht.onHitTestResultObservable.add(r => { if (r.length) lastHit = r[0]; });
+        $('renderCanvas').addEventListener('touchend', () => {
+          if (!lastHit) return;
+          const pos = new BABYLON.Vector3(), rot = new BABYLON.Quaternion(), scl = new BABYLON.Vector3();
+          BABYLON.Matrix.FromArray(lastHit.transformationMatrix).decompose(scl, rot, pos);
+          portalRoot.position = pos; portalRoot.rotationQuaternion = rot;
+          markerTracked = true; scanPrompt.style.display = 'none';
+        }, { passive: true });
+      } catch(_) {}
+    }
+
+    // Per-frame proximity
+    xrHelper.baseExperience.sessionManager.onXRFrameObservable.add(() => {
+      const cam = xrHelper.baseExperience.camera;
+      if (!cam || !markerTracked) return;
+      const dist = BABYLON.Vector3.Distance(
+        cam.position,
+        portalRoot.getAbsolutePosition().add(new BABYLON.Vector3(0, CFG.portalHeight/2, 0))
+      );
+      if (!insidePortal && dist < CFG.enterThreshold)      enterPortal();
+      else if (insidePortal && dist > CFG.enterThreshold * 1.5) exitPortal();
+      setStatus(`dist: ${dist.toFixed(2)}m | ${insidePortal ? 'inside ●' : 'outside ○'}`);
+    });
+
+    xrHelper.baseExperience.onStateChangedObservable.add(state => {
+      if (state === BABYLON.WebXRState.NOT_IN_XR) onSessionEnd();
+    });
+
+  } catch(err) {
+    console.error(err);
+    splash.style.display = 'flex';
+    startBtn.disabled    = false;
+    startBtn.textContent = 'START AR';
+    showNoXR('Failed to start: ' + (err.message || err));
+    if (engine) { engine.stopRenderLoop(); engine.dispose(); engine = scene = null; }
+  }
+});
+
+// ── Enter / Exit ─────────────────────────────────────────────────────────────
+function enterPortal() {
+  insidePortal = true;
+  insideOverlay.style.display = 'block';
+  insideLabel.style.display   = 'block';
+  scene.meshes.forEach(m => {
+    if (m.material?.stencilFunc === BABYLON.Engine.EQUAL)
+      m.material.stencilFunc = BABYLON.Engine.ALWAYS;
+  });
+}
+function exitPortal() {
+  insidePortal = false;
+  insideOverlay.style.display = 'none';
+  insideLabel.style.display   = 'none';
+  scene.meshes.forEach(m => {
+    if (m.material?.stencilFunc === BABYLON.Engine.ALWAYS
+        && m.name !== 'aperture' && !m.name.startsWith('f'))
+      m.material.stencilFunc = BABYLON.Engine.EQUAL;
+  });
+}
+
+// ── End session ───────────────────────────────────────────────────────────────
+async function endSession() {
+  try { await xrSession?.end(); } catch(_) {}
+  onSessionEnd();
+}
+function onSessionEnd() {
+  insidePortal = markerTracked = false;
+  hud.style.display    = 'none';
+  splash.style.display = 'flex';
+  startBtn.disabled    = false;
+  startBtn.textContent = 'START AR';
+  if (engine) { engine.stopRenderLoop(); engine.dispose(); engine = scene = null; }
+}
+
+function setStatus(msg) { statusBar.textContent = msg; }
 </script>
 </body>
 </html>
