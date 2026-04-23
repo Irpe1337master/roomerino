@@ -211,13 +211,12 @@ function initBabylon() {
   const pt = new BABYLON.PointLight('pt', new BABYLON.Vector3(0,1.2,-0.5), scene);
   pt.intensity = 1.8; pt.diffuse = new BABYLON.Color3(0.5,0.75,1.0); pt.range = 5;
 
-  // We use a plain UniversalCamera; its transform will be set from XR poses each frame
+  // Plain UniversalCamera; transform is set from XR poses each frame
   const cam = new BABYLON.UniversalCamera('xrCam', BABYLON.Vector3.Zero(), scene);
   cam.minZ = 0.01; cam.maxZ = 100;
   scene.activeCamera = cam;
 
   buildPortal();
-  // Do NOT call engine.runRenderLoop — we render inside the XR frame callback
 }
 
 // ─── PORTAL GEOMETRY ───────────────────────────────────────────────────────
@@ -307,19 +306,18 @@ function buildPortal() {
   grid.color=new BABYLON.Color3(0.1,0.3,0.75); grid.parent=roomNode; grid.renderingGroupId=1;
 }
 
-// ─── START: raw WebXR session, Babylon renders into it ────────────────────
+// ─── START: raw WebXR session ──────────────────────────────────────────────
 startBtn.addEventListener('click', async () => {
   startBtn.disabled=true; startBtn.textContent='starting…';
   initBabylon();
 
-  // ── 1. Request XR session directly (guarantees camera passthrough) ──
+  // ── 1. Request XR session ──
   const sessionInit = {
     requiredFeatures: ['local-floor'],
     optionalFeatures: ['image-tracking', 'hit-test', 'dom-overlay'],
-    domOverlay: { root: hud },  // show our HUD as a DOM overlay inside AR
+    domOverlay: { root: hud },
   };
 
-  // Prepare marker ImageBitmap for image-tracking
   let markerBitmap = null;
   try {
     markerBitmap = await createImageBitmap(markerCanvas);
@@ -334,13 +332,12 @@ startBtn.addEventListener('click', async () => {
   try {
     xrSession = await navigator.xr.requestSession('immersive-ar', sessionInit);
   } catch(err) {
-    // If image-tracking fails (unsupported), retry without it
     console.warn('Session with image-tracking failed, retrying:', err);
     try {
       delete sessionInit.trackedImages;
       sessionInit.optionalFeatures = ['hit-test','dom-overlay'];
       xrSession = await navigator.xr.requestSession('immersive-ar', sessionInit);
-      markerBitmap = null; // tracking unavailable
+      markerBitmap = null;
     } catch(err2) {
       splash.style.display='flex';
       startBtn.disabled=false; startBtn.textContent='START AR';
@@ -349,15 +346,15 @@ startBtn.addEventListener('click', async () => {
     }
   }
 
-  // ── 2. Hook Babylon's GL context into the XR session ──
+  // ── 2. Hook Babylon's GL context ──
   const gl = engine._gl;
   await gl.makeXRCompatible();
 
   xrLayer = new XRWebGLLayer(xrSession, gl, {
     antialias: true,
-    alpha: true,           // transparent framebuffer = camera passthrough shows through
+    alpha: true,
     depth: true,
-    stencil: true,         // we need the stencil buffer
+    stencil: true,
   });
   await xrSession.updateRenderState({ baseLayer: xrLayer });
 
@@ -368,24 +365,10 @@ startBtn.addEventListener('click', async () => {
     xrRefSpace = await xrSession.requestReferenceSpace('local');
   }
 
-  // ── 4. Image tracking event listeners ──
+  // ── 4. Image tracking setup ──
   let usingImageTracking = false;
-  if (xrSession.supportedFrameFeatures?.has('image-tracking') || markerBitmap) {
-    xrSession.addEventListener('imagetracked', e => {
-      const t = e.image;
-      if (!t || !t.measuredWidthInMeters) return;
-      // Place portal at tracked image pose
-      const imgPose = e.frame.getImagePose(t, xrRefSpace);
-      if (!imgPose) return;
-      applyXRPoseToNode(imgPose.transform, portalRoot);
-      markerTracked = true; usingImageTracking = true;
-      scanRing.style.display = 'none';
-    });
-    xrSession.addEventListener('imageuntracked', () => {
-      markerTracked = false;
-      scanRing.style.display = 'flex';
-      scanTxt.textContent = 'marker lost — keep scanning';
-    });
+  if (markerBitmap && xrSession.supportedFrameFeatures?.has('image-tracking') !== false) {
+    usingImageTracking = true;
   }
 
   // ── 5. Hit-test fallback (tap to place) ──
@@ -401,7 +384,7 @@ startBtn.addEventListener('click', async () => {
   }
 
   canvas.addEventListener('touchend', () => {
-    if (lastHitPose) {
+    if (lastHitPose && !usingImageTracking) {
       applyXRPoseToNode(lastHitPose.transform, portalRoot);
       markerTracked = true;
       scanRing.style.display = 'none';
@@ -417,20 +400,48 @@ startBtn.addEventListener('click', async () => {
   // ── 7. XR frame loop ──
   let orbT = 0;
   xrSession.requestAnimationFrame(function onXRFrame(time, frame) {
-    xrSession.requestAnimationFrame(onXRFrame); // queue next
+    xrSession.requestAnimationFrame(onXRFrame);
 
     const pose = frame.getViewerPose(xrRefSpace);
     if (!pose) return;
     camPose = pose;
 
-    // Hit test results
+    // Hit test results (Fallback)
     if (hitTestSource) {
       const hits = frame.getHitTestResults(hitTestSource);
       lastHitPose = hits.length ? hits[0].getPose(xrRefSpace) : null;
     }
 
+    // Image Tracking Results
+    if (usingImageTracking) {
+      const results = frame.getImageTrackingResults();
+      let trackingFound = false;
+
+      for (const result of results) {
+        if (result.trackingState === "tracked") {
+          const imgPose = frame.getPose(result.imageSpace, xrRefSpace);
+          if (imgPose) {
+            applyXRPoseToNode(imgPose.transform, portalRoot);
+            
+            if (!markerTracked) {
+              markerTracked = true;
+              scanRing.style.display = 'none';
+            }
+            trackingFound = true;
+            break; 
+          }
+        }
+      }
+
+      if (!trackingFound && markerTracked) {
+        markerTracked = false;
+        scanRing.style.display = 'flex';
+        scanTxt.textContent = 'marker lost — keep scanning';
+      }
+    }
+
     // Update Babylon camera from XR pose
-    const view = pose.views[0]; // first (and only) view in non-stereo AR
+    const view = pose.views[0]; 
     updateBabylonCamera(view);
 
     // Animate orb
@@ -441,13 +452,13 @@ startBtn.addEventListener('click', async () => {
     }
 
     // Proximity check
-    if (markerTracked) {
+    if (markerTracked || (!usingImageTracking && lastHitPose)) {
       const camPos  = scene.activeCamera.position;
       const portPos = portalRoot.getAbsolutePosition()
         .add(new BABYLON.Vector3(0, CFG.portalH/2, 0));
       const dist = BABYLON.Vector3.Distance(camPos, portPos);
 
-      if (!insidePortal && dist < CFG.enterDist)      enterPortal();
+      if (!insidePortal && dist < CFG.enterDist)         enterPortal();
       else if (insidePortal && dist > CFG.enterDist*1.5) exitPortal();
 
       setStatus(`dist: ${dist.toFixed(2)}m | ${insidePortal ? 'inside ●' : 'outside ○'}`);
@@ -468,16 +479,13 @@ function updateBabylonCamera(view) {
   const cam = scene.activeCamera;
   if (!cam) return;
 
-  // Position
   const t = view.transform.position;
   cam.position.set(t.x, t.y, t.z);
 
-  // Rotation (from XR orientation quaternion)
   const q = view.transform.orientation;
   const bq = new BABYLON.Quaternion(q.x, q.y, q.z, q.w);
   cam.rotationQuaternion = bq;
 
-  // Projection matrix from XR (handles FOV, near/far correctly)
   const proj = BABYLON.Matrix.FromArray(view.projectionMatrix);
   cam.freezeProjectionMatrix(proj);
 }
