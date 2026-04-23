@@ -123,297 +123,187 @@
 <script>
 'use strict';
 
-// ─── CONFIG ────────────────────────────────────────────────────────────────
 const CFG = {
-  portalW:   0.80,   // door width (m)
-  portalH:   1.60,   // door height (m)
-  roomSize:  3.0,    // virtual room cube (m)
-  enterDist: 0.55,   // transition threshold (m)
-  markerW:   0.15,   // printed marker physical width (m)
+  portalW: 0.80,
+  portalH: 1.60,
+  roomSize: 3.0,
+  enterDist: 0.55,
   stencilRef: 1,
 };
 
-// ─── STATE ─────────────────────────────────────────────────────────────────
 let engine, scene, xrSession, xrRefSpace, xrLayer;
 let portalRoot, orbMesh;
-let insidePortal  = false;
-let camPose       = null;  // latest XRViewerPose
+let insidePortal = false;
 
-// ─── DOM ───────────────────────────────────────────────────────────────────
-const canvas       = document.getElementById('renderCanvas');
-const splash       = document.getElementById('splash');
-const startBtn     = document.getElementById('startBtn');
-const errMsg       = document.getElementById('errMsg');
-const hud          = document.getElementById('hud');
-const scanRing     = document.getElementById('scanRing');
-const scanTxt      = document.getElementById('scanTxt');
-const statusBar    = document.getElementById('statusBar');
-const insideBadge  = document.getElementById('insideBadge');
-const markerCanvas = document.getElementById('markerPreview');
+const canvas = document.getElementById('renderCanvas');
+const splash = document.getElementById('splash');
+const startBtn = document.getElementById('startBtn');
+const errMsg = document.getElementById('errMsg');
+const hud = document.getElementById('hud');
+const scanRing = document.getElementById('scanRing');
+const scanTxt = document.getElementById('scanTxt');
+const statusBar = document.getElementById('statusBar');
+const insideBadge = document.getElementById('insideBadge');
 
-
-
-// ─── XR SUPPORT CHECK ──────────────────────────────────────────────────────
+// ─── XR CHECK ─────────────────────────────────
 (async () => {
-  if (!navigator.xr) { fail('WebXR not found. Use Chrome on Android over HTTPS.'); return; }
-  try {
-    if (await navigator.xr.isSessionSupported('immersive-ar')) {
-      startBtn.disabled = false;
-      startBtn.textContent = 'START AR';
-    } else {
-      fail('immersive-ar not supported.\nNeed Android + Chrome + ARCore.');
-    }
-  } catch(e) { fail('AR check failed — serve over HTTPS.'); }
+  if (!navigator.xr) return fail('No WebXR');
+  if (await navigator.xr.isSessionSupported('immersive-ar')) {
+    startBtn.disabled = false;
+    startBtn.textContent = 'START AR';
+  } else {
+    fail('AR not supported');
+  }
 })();
 
 function fail(msg) {
-  startBtn.disabled = true; startBtn.textContent = 'UNAVAILABLE';
-  errMsg.style.display = 'block'; errMsg.textContent = msg;
+  startBtn.disabled = true;
+  startBtn.textContent = 'UNAVAILABLE';
+  errMsg.style.display = 'block';
+  errMsg.textContent = msg;
 }
 
-// ─── BABYLON ENGINE (no XR helper — we drive it manually) ─────────────────
+// ─── BABYLON ─────────────────────────────────
 function initBabylon() {
-  engine = new BABYLON.Engine(canvas, true, {
-    stencil: true,
-    alpha: true,                  // transparent so AR passthrough shows through
-    antialias: true,
-    preserveDrawingBuffer: true,
-  });
-
+  engine = new BABYLON.Engine(canvas, true, { stencil:true, alpha:true });
   scene = new BABYLON.Scene(engine);
-  scene.clearColor = new BABYLON.Color4(0, 0, 0, 0); // fully transparent bg
+  scene.clearColor = new BABYLON.Color4(0,0,0,0);
 
-  // Lights
-  const amb = new BABYLON.HemisphericLight('amb', new BABYLON.Vector3(0,1,0), scene);
-  amb.intensity = 0.5; amb.diffuse = new BABYLON.Color3(0.4, 0.6, 1.0);
-
-  const pt = new BABYLON.PointLight('pt', new BABYLON.Vector3(0,1.2,-0.5), scene);
-  pt.intensity = 1.8; pt.diffuse = new BABYLON.Color3(0.5,0.75,1.0); pt.range = 5;
-
-  // Plain UniversalCamera; transform is set from XR poses each frame
-  const cam = new BABYLON.UniversalCamera('xrCam', BABYLON.Vector3.Zero(), scene);
-  cam.minZ = 0.01; cam.maxZ = 100;
+  const cam = new BABYLON.UniversalCamera('cam', BABYLON.Vector3.Zero(), scene);
   scene.activeCamera = cam;
+
+  new BABYLON.HemisphericLight('h', new BABYLON.Vector3(0,1,0), scene);
 
   buildPortal();
 }
 
-// ─── PORTAL GEOMETRY ───────────────────────────────────────────────────────
-function mkStencilMat(name, color) {
-  const m = new BABYLON.StandardMaterial(name, scene);
-  m.emissiveColor = color; m.diffuseColor = color;
+// ─── PORTAL ─────────────────────────────────
+function mkStencilMat(color) {
+  const m = new BABYLON.StandardMaterial('m', scene);
+  m.emissiveColor = color;
+  m.diffuseColor = color;
   m.backFaceCulling = false;
-  m.stencil = true; m.stencilMask = 0xFF;
+  m.stencil = true;
   m.stencilFunc = BABYLON.Engine.EQUAL;
-  m.stencilFuncRef = CFG.stencilRef; m.stencilFuncMask = 0xFF;
-  m.stencilOpStencilFail = BABYLON.Engine.KEEP;
-  m.stencilOpDepthFail   = BABYLON.Engine.KEEP;
-  m.stencilOpStencilDepthPass = BABYLON.Engine.KEEP;
+  m.stencilFuncRef = CFG.stencilRef;
   return m;
 }
 
 function buildPortal() {
   portalRoot = new BABYLON.TransformNode('portal', scene);
-  portalRoot.position.y = -9999; // off-screen until marker found
 
-  // ── Stencil aperture ──
-  const aMat = new BABYLON.StandardMaterial('aMat', scene);
-  aMat.disableColorWrite = true; aMat.backFaceCulling = false;
-  aMat.stencil = true; aMat.stencilMask = 0xFF;
-  aMat.stencilFunc = BABYLON.Engine.ALWAYS;
-  aMat.stencilFuncRef = CFG.stencilRef; aMat.stencilFuncMask = 0xFF;
-  aMat.stencilOpStencilFail = BABYLON.Engine.KEEP;
-  aMat.stencilOpDepthFail   = BABYLON.Engine.KEEP;
-  aMat.stencilOpStencilDepthPass = BABYLON.Engine.REPLACE;
+  const apertureMat = new BABYLON.StandardMaterial('a', scene);
+  apertureMat.disableColorWrite = true;
+  apertureMat.stencil = true;
+  apertureMat.stencilFunc = BABYLON.Engine.ALWAYS;
+  apertureMat.stencilOpStencilDepthPass = BABYLON.Engine.REPLACE;
+  apertureMat.stencilFuncRef = CFG.stencilRef;
 
-  const ap = BABYLON.MeshBuilder.CreatePlane('ap',
-    {width:CFG.portalW, height:CFG.portalH, sideOrientation:BABYLON.Mesh.DOUBLESIDE}, scene);
-  ap.material = aMat; ap.parent = portalRoot;
-  ap.position.y = CFG.portalH/2; ap.renderingGroupId = 0;
+  const ap = BABYLON.MeshBuilder.CreatePlane('ap',{width:CFG.portalW,height:CFG.portalH},scene);
+  ap.material = apertureMat;
+  ap.parent = portalRoot;
+  ap.position.y = CFG.portalH/2;
 
-  // ── Frame ──
-  const fMat = new BABYLON.StandardMaterial('fMat', scene);
-  fMat.emissiveColor = new BABYLON.Color3(1.0,0.42,0.1); fMat.disableLighting = true;
-  const ft=0.04, fW=CFG.portalW, fH=CFG.portalH;
-  [{w:fW+ft*2,h:ft,  p:[0,fH+ft/2,0.003]},
-   {w:fW+ft*2,h:ft,  p:[0,-ft/2,  0.003]},
-   {w:ft,     h:fH,  p:[-(fW/2+ft/2),fH/2,0.003]},
-   {w:ft,     h:fH,  p:[fW/2+ft/2,  fH/2,0.003]}
-  ].forEach((s,i) => {
-    const b = BABYLON.MeshBuilder.CreateBox('f'+i,
-      {width:s.w,height:s.h,depth:ft*0.4},scene);
-    b.material=fMat; b.parent=portalRoot;
-    b.position=new BABYLON.Vector3(...s.p); b.renderingGroupId=2;
-  });
+  const room = new BABYLON.TransformNode('room', scene);
+  room.parent = portalRoot;
+  room.position.z = -1.5;
+  room.position.y = CFG.portalH/2;
 
-  // ── Room ──
-  const roomNode = new BABYLON.TransformNode('room', scene);
-  roomNode.parent = portalRoot;
-  roomNode.position = new BABYLON.Vector3(0, CFG.portalH/2, -(CFG.roomSize/2)+0.01);
-  const rs = CFG.roomSize;
-  const wallDefs = [
-    {n:'back', rx:0,         ry:0,          pos:[0,0,-rs/2], c:new BABYLON.Color3(0.05,0.10,0.25)},
-    {n:'left', rx:0,         ry:Math.PI/2,  pos:[-rs/2,0,0], c:new BABYLON.Color3(0.04,0.08,0.20)},
-    {n:'rght', rx:0,         ry:-Math.PI/2, pos:[rs/2,0,0],  c:new BABYLON.Color3(0.04,0.08,0.20)},
-    {n:'flor', rx:Math.PI/2, ry:0,          pos:[0,-rs/2,0], c:new BABYLON.Color3(0.02,0.05,0.14)},
-    {n:'ceil', rx:-Math.PI/2,ry:0,          pos:[0,rs/2,0],  c:new BABYLON.Color3(0.07,0.12,0.28)},
-  ];
-  wallDefs.forEach(d => {
-    const m = BABYLON.MeshBuilder.CreatePlane(d.n,
-      {width:rs,height:rs,sideOrientation:BABYLON.Mesh.FRONTSIDE},scene);
-    m.material = mkStencilMat(d.n+'M', d.c);
-    m.parent = roomNode;
-    m.position = new BABYLON.Vector3(...d.pos);
-    m.rotation = new BABYLON.Vector3(d.rx, d.ry, 0);
-    m.renderingGroupId = 1;
-  });
+  const back = BABYLON.MeshBuilder.CreatePlane('b',{size:3},scene);
+  back.position.z = -1.5;
+  back.material = mkStencilMat(new BABYLON.Color3(0.1,0.2,0.4));
+  back.parent = room;
 
-  // Orb
-  orbMesh = BABYLON.MeshBuilder.CreateSphere('orb',{diameter:0.18},scene);
-  orbMesh.material = mkStencilMat('orbM', new BABYLON.Color3(0.3,0.75,1.0));
-  orbMesh.parent = roomNode;
-  orbMesh.position = new BABYLON.Vector3(0, 0.15, -rs*0.35);
-  orbMesh.renderingGroupId = 1;
-
-  // Floor grid
-  const lines=[];
-  for(let x=-rs/2;x<=rs/2+0.001;x+=0.4)
-    lines.push([new BABYLON.Vector3(x,-rs/2+0.005,-rs/2),new BABYLON.Vector3(x,-rs/2+0.005,rs/2)]);
-  for(let z=-rs/2;z<=rs/2+0.001;z+=0.4)
-    lines.push([new BABYLON.Vector3(-rs/2,-rs/2+0.005,z),new BABYLON.Vector3(rs/2,-rs/2+0.005,z)]);
-  const grid = BABYLON.MeshBuilder.CreateLineSystem('grid',{lines},scene);
-  grid.color=new BABYLON.Color3(0.1,0.3,0.75); grid.parent=roomNode; grid.renderingGroupId=1;
+  orbMesh = BABYLON.MeshBuilder.CreateSphere('orb',{diameter:0.2},scene);
+  orbMesh.material = mkStencilMat(new BABYLON.Color3(0.3,0.8,1));
+  orbMesh.parent = room;
+  orbMesh.position.z = -1;
 }
 
-// ─── START: raw WebXR session ──────────────────────────────────────────────
+// ─── START XR ─────────────────────────────────
 startBtn.addEventListener('click', async () => {
-  startBtn.disabled = true;
-  startBtn.textContent = 'starting…';
 
   initBabylon();
 
-  const sessionInit = {
-    requiredFeatures: ['local-floor', 'hit-test'],
+  xrSession = await navigator.xr.requestSession('immersive-ar', {
+    requiredFeatures: ['hit-test','local-floor'],
     optionalFeatures: ['dom-overlay'],
-    domOverlay: { root: hud },
-  };
-
-  try {
-    xrSession = await navigator.xr.requestSession('immersive-ar', sessionInit);
-  } catch (err) {
-    fail('Could not start AR:\n' + err.message);
-    startBtn.disabled = false;
-    startBtn.textContent = 'START AR';
-    return;
-  }
+    domOverlay: { root: hud }
+  });
 
   const gl = engine._gl;
   await gl.makeXRCompatible();
 
-  xrLayer = new XRWebGLLayer(xrSession, gl, {
-    antialias: true,
-    alpha: true,
-    depth: true,
-    stencil: true,
-  });
-
+  xrLayer = new XRWebGLLayer(xrSession, gl);
   await xrSession.updateRenderState({ baseLayer: xrLayer });
 
-  try {
-    xrRefSpace = await xrSession.requestReferenceSpace('local-floor');
-  } catch {
-    xrRefSpace = await xrSession.requestReferenceSpace('local');
-  }
+  xrRefSpace = await xrSession.requestReferenceSpace('local-floor');
 
   const viewerSpace = await xrSession.requestReferenceSpace('viewer');
-  const hitTestSource = await xrSession.requestHitTestSource({
-    space: viewerSpace,
-  });
+  const hitTestSource = await xrSession.requestHitTestSource({ space: viewerSpace });
 
   splash.style.display = 'none';
   hud.style.display = 'block';
 
-  scanTxt.textContent = 'move phone to find surface';
-  setStatus('scanning…');
-
   let placed = false;
   let lastHitPose = null;
-  let reticle;
 
-  // ── Reticle (visual feedback)
-  reticle = BABYLON.MeshBuilder.CreateTorus('reticle', {
-    diameter: 0.15,
-    thickness: 0.01,
-  }, scene);
-  reticle.material = new BABYLON.StandardMaterial('retMat', scene);
-  reticle.material.emissiveColor = new BABYLON.Color3(0, 1, 0);
+  const reticle = BABYLON.MeshBuilder.CreateTorus('r',{diameter:0.15, thickness:0.01},scene);
+  reticle.material = new BABYLON.StandardMaterial('rm',scene);
+  reticle.material.emissiveColor = new BABYLON.Color3(0,1,0);
   reticle.isVisible = false;
-
-  canvas.addEventListener('touchend', () => {
-    if (lastHitPose && !placed) {
-      applyXRPoseToNode(lastHitPose.transform, portalRoot);
-      portalRoot.setEnabled(true);
-
-      placed = true;
-
-      scanRing.style.display = 'none';
-      reticle.isVisible = false;
-      setStatus('portal placed');
-    }
-  }, { passive: true });
 
   portalRoot.setEnabled(false);
 
-  let orbT = 0;
+  // ✅ FIXED INPUT
+  xrSession.addEventListener('select', () => {
+    if (!lastHitPose || placed) return;
 
-  xrSession.requestAnimationFrame(function onXRFrame(time, frame) {
-    xrSession.requestAnimationFrame(onXRFrame);
+    applyPose(lastHitPose.transform, portalRoot);
+
+    // 🔥 KEY FIX: make door upright
+    portalRoot.rotationQuaternion =
+      BABYLON.Quaternion.FromEulerAngles(0, Math.PI, 0);
+
+    portalRoot.setEnabled(true);
+
+    placed = true;
+    scanRing.style.display = 'none';
+    reticle.isVisible = false;
+    setStatus('portal placed');
+  });
+
+  xrSession.requestAnimationFrame(function loop(t, frame) {
+    xrSession.requestAnimationFrame(loop);
 
     const pose = frame.getViewerPose(xrRefSpace);
     if (!pose) return;
 
-    const view = pose.views[0];
-    updateBabylonCamera(view);
+    updateCamera(pose.views[0]);
 
-    // ── Hit test
     const hits = frame.getHitTestResults(hitTestSource);
 
-    if (!placed) {
-      if (hits.length > 0) {
-        lastHitPose = hits[0].getPose(xrRefSpace);
+    if (!placed && hits.length) {
+      lastHitPose = hits[0].getPose(xrRefSpace);
 
-        if (lastHitPose) {
-          applyXRPoseToNode(lastHitPose.transform, reticle);
-          reticle.isVisible = true;
+      applyPose(lastHitPose.transform, reticle);
+      reticle.isVisible = true;
 
-          scanTxt.textContent = 'tap to place portal';
-          setStatus('surface detected');
-        }
-      } else {
-        reticle.isVisible = false;
-        scanTxt.textContent = 'move phone to find surface';
-      }
+      scanTxt.textContent = 'tap to place portal';
+      setStatus('surface detected');
     }
 
-    // ── Animate orb
-    orbT += 0.016;
     if (orbMesh) {
-      orbMesh.position.y = 0.15 + Math.sin(orbT) * 0.12;
-      orbMesh.rotation.y = orbT * 0.5;
+      orbMesh.rotation.y += 0.02;
     }
 
-    // ── Portal distance check (only after placement)
     if (placed) {
-      const camPos = scene.activeCamera.position;
-      const portPos = portalRoot.getAbsolutePosition()
-        .add(new BABYLON.Vector3(0, CFG.portalH / 2, 0));
+      const cam = scene.activeCamera.position;
+      const port = portalRoot.getAbsolutePosition().add(new BABYLON.Vector3(0,CFG.portalH/2,0));
+      const d = BABYLON.Vector3.Distance(cam, port);
 
-      const dist = BABYLON.Vector3.Distance(camPos, portPos);
-
-      if (!insidePortal && dist < CFG.enterDist) enterPortal();
-      else if (insidePortal && dist > CFG.enterDist * 1.5) exitPortal();
-
-      setStatus(`dist: ${dist.toFixed(2)}m | ${insidePortal ? 'inside ●' : 'outside ○'}`);
+      if (!insidePortal && d < CFG.enterDist) enterPortal();
+      if (insidePortal && d > CFG.enterDist*1.5) exitPortal();
     }
 
     gl.bindFramebuffer(gl.FRAMEBUFFER, xrLayer.framebuffer);
@@ -425,62 +315,52 @@ startBtn.addEventListener('click', async () => {
   xrSession.addEventListener('end', onSessionEnd);
 });
 
-// ─── SYNC BABYLON CAMERA FROM XR VIEW ─────────────────────────────────────
-function updateBabylonCamera(view) {
+// ─── HELPERS ─────────────────────────────────
+function updateCamera(view){
   const cam = scene.activeCamera;
-  if (!cam) return;
-
-  const t = view.transform.position;
-  cam.position.set(t.x, t.y, t.z);
-
-  const q = view.transform.orientation;
-  const bq = new BABYLON.Quaternion(q.x, q.y, q.z, q.w);
-  cam.rotationQuaternion = bq;
-
-  const proj = BABYLON.Matrix.FromArray(view.projectionMatrix);
-  cam.freezeProjectionMatrix(proj);
+  cam.position.copyFromFloats(
+    view.transform.position.x,
+    view.transform.position.y,
+    view.transform.position.z
+  );
+  cam.rotationQuaternion = new BABYLON.Quaternion(
+    view.transform.orientation.x,
+    view.transform.orientation.y,
+    view.transform.orientation.z,
+    view.transform.orientation.w
+  );
 }
 
-// ─── APPLY XR POSE TRANSFORM TO A BABYLON NODE ────────────────────────────
-function applyXRPoseToNode(transform, node) {
-  const p = transform.position;
-  const q = transform.orientation;
-  node.position.set(p.x, p.y, p.z);
-  node.rotationQuaternion = new BABYLON.Quaternion(q.x, q.y, q.z, q.w);
+function applyPose(t,node){
+  node.position.set(t.position.x,t.position.y,t.position.z);
+  node.rotationQuaternion = new BABYLON.Quaternion(
+    t.orientation.x,t.orientation.y,t.orientation.z,t.orientation.w
+  );
 }
 
-// ─── PORTAL ENTER / EXIT ───────────────────────────────────────────────────
-function enterPortal() {
+// ─── PORTAL STATE ────────────────────────────
+function enterPortal(){
   insidePortal = true;
-  insideBadge.style.display = 'block';
-  scene.meshes.forEach(m => {
-    if (m.material?.stencilFunc === BABYLON.Engine.EQUAL)
-      m.material.stencilFunc = BABYLON.Engine.ALWAYS;
-  });
+  insideBadge.style.display='block';
 }
-function exitPortal() {
+function exitPortal(){
   insidePortal = false;
-  insideBadge.style.display = 'none';
-  scene.meshes.forEach(m => {
-    if (m.material?.stencilFunc === BABYLON.Engine.ALWAYS
-        && !['ap','f0','f1','f2','f3'].includes(m.name))
-      m.material.stencilFunc = BABYLON.Engine.EQUAL;
-  });
+  insideBadge.style.display='none';
 }
 
-// ─── END SESSION ───────────────────────────────────────────────────────────
-async function endSession() {
-  try { await xrSession?.end(); } catch(_) {}
-}
-function onSessionEnd() {
-  hud.style.display    = 'none';
-  splash.style.display = 'flex';
-  startBtn.disabled    = false;
-  startBtn.textContent = 'START AR';
-  if (engine) { engine.dispose(); engine = scene = null; }
+// ─── END ─────────────────────────────────────
+async function endSession(){ await xrSession?.end(); }
+
+function onSessionEnd(){
+  hud.style.display='none';
+  splash.style.display='flex';
+  startBtn.disabled=false;
+  startBtn.textContent='START AR';
+  engine?.dispose();
 }
 
-function setStatus(t) { statusBar.textContent = t; }
+function setStatus(t){ statusBar.textContent=t; }
+
 </script>
 </body>
 </html>
